@@ -4,6 +4,13 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 
+class JobType(str, Enum):
+    """Job type enumeration."""
+
+    EXTRACT = "extract"
+    COMPOSE = "compose"
+
+
 class HealthStatus(str, Enum):
     """Health status enumeration."""
 
@@ -30,10 +37,21 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class VideoMetadata(BaseModel):
+    """Video metadata extracted from source file."""
+
+    fps: float
+    width: int
+    height: int
+    codec: str
+    duration_seconds: float
+
+
 class Job(BaseModel):
     """Job model."""
 
     id: str
+    job_type: JobType
     status: JobStatus
     progress: int = 0
     input_params: Optional[dict[str, Any]] = None
@@ -48,6 +66,7 @@ class StartJobRequest(BaseModel):
     """Request to start a job."""
 
     job_id: str
+    job_type: JobType
     input_params: Optional[dict[str, Any]] = None
 
 
@@ -56,6 +75,13 @@ class ExtractFramesRequest(BaseModel):
 
     input_file: str
     output_dir: str
+
+
+class ComposeFramesRequest(BaseModel):
+    """Request to compose a video from frames."""
+
+    input_dir: str
+    output_file: str
 
 
 class CancelJobRequest(BaseModel):

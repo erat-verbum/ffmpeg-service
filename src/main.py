@@ -10,12 +10,13 @@ from .models import (
     HealthStatus,
     Job,
     JobStatus,
+    JobType,
     StartJobRequest,
 )
 
 app = FastAPI(
     title="FFMPEG Service",
-    description="FFMPEG service for video frame extraction",
+    description="FFMPEG service for video frame extraction and composition",
     version="0.1.0",
 )
 
@@ -40,27 +41,58 @@ async def health_check():
     )
 
 
+def _validate_job_params(job_type: JobType, input_params: dict[str, Any]) -> None:
+    """
+    Validate input parameters based on job type.
+
+    Args:
+        job_type: The type of job (extract or compose)
+        input_params: The input parameters dictionary
+
+    Raises:
+        HTTPException: If validation fails
+    """
+    if job_type == JobType.EXTRACT:
+        input_file = input_params.get("input_file")
+        output_dir = input_params.get("output_dir")
+        if not input_file or not output_dir:
+            raise HTTPException(
+                status_code=400,
+                detail="extract job requires input_file and output_dir (paths relative to /app/data/)",
+            )
+    elif job_type == JobType.COMPOSE:
+        input_dir = input_params.get("input_dir")
+        output_file = input_params.get("output_file")
+        if not input_dir or not output_file:
+            raise HTTPException(
+                status_code=400,
+                detail="compose job requires input_dir and output_file (paths relative to /app/data/)",
+            )
+
+
 @app.post("/job", response_model=Job)
 async def start_job(request: StartJobRequest):
-    """Start a new job."""
+    """Start a new job (extract or compose)."""
     global _current_job, _job_task
 
     if _current_job and _current_job["status"] == JobStatus.RUNNING:
         raise HTTPException(status_code=409, detail="A job is already running")
 
-    input_params = request.input_params or {}
-    input_file = input_params.get("input_file")
-    output_dir = input_params.get("output_dir")
-
-    if not input_file or not output_dir:
+    if not request.job_type:
         raise HTTPException(
             status_code=400,
-            detail="input_file and output_dir are required in input_params",
+            detail="job_type is required (extract or compose)",
         )
+
+    input_params = request.input_params or {}
+    input_params["job_type"] = request.job_type.value
+
+    _validate_job_params(request.job_type, input_params)
 
     now = datetime.now().isoformat()
     _current_job = {
         "id": request.job_id,
+        "job_type": request.job_type.value,
         "status": JobStatus.RUNNING,
         "progress": 0,
         "input_params": request.input_params,

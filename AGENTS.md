@@ -1,6 +1,6 @@
 # FFmpeg Service
 
-FastAPI service for extracting video frames to PNG images using FFmpeg.
+FastAPI service for extracting and composing video frames using FFmpeg.
 
 ## Features
 
@@ -63,15 +63,15 @@ service-name/
 
 - **main.py**: FastAPI application with endpoints:
   - `GET /health` - Health check
-  - `POST /job` - Start a frame extraction job
+  - `POST /job` - Start a frame extraction or composition job
   - `GET /job` - Get current job status
   - `POST /job/cancel` - Cancel running job
 
-- **models.py**: Pydantic models including `Job`, `JobStatus`, `StartJobRequest`, `ExtractFramesRequest`
+- **models.py**: Pydantic models including `Job`, `JobStatus`, `JobType`, `StartJobRequest`, `VideoMetadata`
 
-- **job_runner.py**: FFmpeg job execution. Extracts all frames from video to PNG files.
+- **job_runner.py**: FFmpeg job execution. Extracts frames from video to PNG files or composes video from frames. Saves metadata for reconstitution.
 
-- **cli.py**: Command-line interface for running frame extraction without Docker. Use `-i` for input file and `-o` for output directory.
+- **cli.py**: Command-line interface for running frame extraction or composition without Docker. Use `-t` for job type, `-i` for input file, `-o` for output directory.
 
 ## Service Components
 
@@ -107,9 +107,21 @@ service-name/
 
 ## Input Parameters
 
-The job accepts these input parameters:
+The job requires a `job_type` parameter to specify the operation:
+
+### Extract Job
+Extracts frames from a video to PNG images and saves metadata for reconstitution.
+- `job_type`: `"extract"` (required)
 - `input_file` (required): Path to input video file (e.g., `data/input.mp4`)
 - `output_dir` (required): Directory for output PNG frames (e.g., `data/output_frames`)
+
+### Compose Job
+Creates a video from PNG frames using saved metadata.
+- `job_type`: `"compose"` (required)
+- `input_dir` (required): Directory containing PNG frames and metadata.json (e.g., `data/output_frames`)
+- `output_file` (required): Path to output video file (e.g., `data/composed.mp4`)
+
+All paths are relative to `/app/data/` in the container.
 
 ## HTTP Interface
 
@@ -133,16 +145,22 @@ The job accepts these input parameters:
     ```json
     {
       "job_id": "string",
+      "job_type": "extract" | "compose",
       "input_params": {
+        // For extract:
         "input_file": "data/input.mp4",
         "output_dir": "data/output_frames"
+        // OR for compose:
+        "input_dir": "data/output_frames",
+        "output_file": "data/composed.mp4"
       }
     }
     ```
   - **Response**: Job object with status, progress, timestamps
   - **Errors**: 
-    - 400 if missing input_file or output_dir
-    - 400 if input file doesn't exist
+    - 400 if job_type missing
+    - 400 if required params missing for job type
+    - 400 if input file/directory doesn't exist
     - 409 if job already running
 
 - `GET /job`
@@ -150,6 +168,7 @@ The job accepts these input parameters:
     ```json
     {
       "id": "string",
+      "job_type": "extract" | "compose",
       "status": "running|completed|failed|cancelled",
       "progress": 0-100,
       "result": { "completed": true, "frame_count": 300 },
@@ -182,6 +201,7 @@ curl -X POST http://localhost:8001/job \
   -H "Content-Type: application/json" \
   -d '{
     "job_id": "extract-1",
+    "job_type": "extract",
     "input_params": {
       "input_file": "data/input.mp4",
       "output_dir": "data/output_frames"
@@ -192,23 +212,43 @@ curl -X POST http://localhost:8001/job \
 curl http://localhost:8001/job
 
 # 4. Frames will be at data/output_frames/frame_0001.png, etc.
+# 5. Metadata saved at data/output_frames/metadata.json
+
+# Example: Compose a video from frames
+# 1. Start compose job:
+curl -X POST http://localhost:8001/job \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_id": "compose-1",
+    "job_type": "compose",
+    "input_params": {
+      "input_dir": "data/output_frames",
+      "output_file": "data/composed.mp4"
+    }
+  }'
 ```
 
 ## CLI
 
-Run frame extraction without Docker (requires ffmpeg installed locally):
+Run video processing without Docker (requires ffmpeg installed locally):
 
 ```bash
 make run-cli
 
 # Or directly:
-uv run python -m src.cli run -i video.mp4 -o output_frames
+uv run python -m src.cli run -t extract -i video.mp4 -o output_frames
+
+# Compose a video from frames:
+uv run python -m src.cli run -t compose --input-dir output_frames -o composed.mp4
 ```
 
 ### CLI Options
 
-- `-i, --input` (required): Input video file path
-- `-o, --output` (required): Output directory for PNG frames
+- `-t, --job-type` (required): Job type: `extract` or `compose`
+- `-i, --input`: Input video file path (for extract)
+- `-o, --output`: Output directory for frames or output video file (for extract)
+- `--input-dir`: Input directory containing frames (for compose)
+- `--output-file`: Output video file path (for compose)
 - `-j, --job-id`: Job identifier (auto-generated if not provided)
 
 ## Dockerfile Requirements

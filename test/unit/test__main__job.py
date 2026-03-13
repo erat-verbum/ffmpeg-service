@@ -27,7 +27,7 @@ def mock_job():
     async def mock_run_job(job_ref, get_status):
         await asyncio.sleep(0.1)
         job_ref["progress"] = 100
-        return {"completed": True, "frame_count": 10}
+        return {"completed": True, "job_type": "extract", "frame_count": 10}
 
     with patch("src.main.run_job", mock_run_job):
         yield
@@ -49,27 +49,44 @@ def test_get_job_empty(client):
     assert response.json() is None
 
 
-def test_start_job_missing_params(client):
-    """Test POST /job returns 400 when input_params missing."""
+def test_start_job_missing_job_type(client):
+    """Test POST /job returns 422 when job_type missing."""
     response = client.post("/job", json={"job_id": "test-job-1"})
+    assert response.status_code == 422
+
+
+def test_start_job_missing_params_extract(client):
+    """Test POST /job returns 400 when input_params missing for extract."""
+    response = client.post(
+        "/job",
+        json={"job_id": "test-job-1", "job_type": "extract"},
+    )
     assert response.status_code == 400
-    assert "input_file and output_dir are required" in response.json()["detail"]
+    assert "extract job requires input_file and output_dir" in response.json()["detail"]
 
 
 def test_start_job_missing_input_file(client):
-    """Test POST /job returns 400 when input_file missing."""
+    """Test POST /job returns 400 when input_file missing for extract."""
     response = client.post(
         "/job",
-        json={"job_id": "test-job-1", "input_params": {"output_dir": "data/out"}},
+        json={
+            "job_id": "test-job-1",
+            "job_type": "extract",
+            "input_params": {"output_dir": "data/out"},
+        },
     )
     assert response.status_code == 400
 
 
 def test_start_job_missing_output_dir(client):
-    """Test POST /job returns 400 when output_dir missing."""
+    """Test POST /job returns 400 when output_dir missing for extract."""
     response = client.post(
         "/job",
-        json={"job_id": "test-job-1", "input_params": {"input_file": "data/in.mp4"}},
+        json={
+            "job_id": "test-job-1",
+            "job_type": "extract",
+            "input_params": {"input_file": "data/in.mp4"},
+        },
     )
     assert response.status_code == 400
 
@@ -80,6 +97,7 @@ def test_start_job_rejects_when_running(client, mock_job):
         "/job",
         json={
             "job_id": "job-1",
+            "job_type": "extract",
             "input_params": {"input_file": "data/in.mp4", "output_dir": "data/out"},
         },
     )
@@ -88,6 +106,7 @@ def test_start_job_rejects_when_running(client, mock_job):
         "/job",
         json={
             "job_id": "job-2",
+            "job_type": "extract",
             "input_params": {"input_file": "data/in.mp4", "output_dir": "data/out"},
         },
     )
@@ -101,6 +120,7 @@ def test_get_job_returns_current(client, mock_job):
         "/job",
         json={
             "job_id": "my-job",
+            "job_type": "extract",
             "input_params": {"input_file": "data/in.mp4", "output_dir": "data/out"},
         },
     )
@@ -110,6 +130,7 @@ def test_get_job_returns_current(client, mock_job):
     data = response.json()
     assert data["id"] == "my-job"
     assert data["status"] == "running"
+    assert data["job_type"] == "extract"
 
 
 def test_cancel_job(client, mock_job):
@@ -118,6 +139,7 @@ def test_cancel_job(client, mock_job):
         "/job",
         json={
             "job_id": "cancel-me",
+            "job_type": "extract",
             "input_params": {"input_file": "data/in.mp4", "output_dir": "data/out"},
         },
     )
@@ -147,6 +169,7 @@ def test_cancel_job_completed(client):
             "/job",
             json={
                 "job_id": "done-job",
+                "job_type": "extract",
                 "input_params": {"input_file": "data/in.mp4", "output_dir": "data/out"},
             },
         )
@@ -155,4 +178,40 @@ def test_cancel_job_completed(client):
     assert response.json()["status"] == "completed"
 
     response = client.post("/job/cancel")
+    assert response.status_code == 400
+
+
+def test_start_job_compose_missing_params(client):
+    """Test POST /job returns 400 when input_params missing for compose."""
+    response = client.post(
+        "/job",
+        json={"job_id": "test-job-1", "job_type": "compose"},
+    )
+    assert response.status_code == 400
+    assert "compose job requires input_dir and output_file" in response.json()["detail"]
+
+
+def test_start_job_compose_missing_input_dir(client):
+    """Test POST /job returns 400 when input_dir missing for compose."""
+    response = client.post(
+        "/job",
+        json={
+            "job_id": "test-job-1",
+            "job_type": "compose",
+            "input_params": {"output_file": "data/out.mp4"},
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_start_job_compose_missing_output_file(client):
+    """Test POST /job returns 400 when output_file missing for compose."""
+    response = client.post(
+        "/job",
+        json={
+            "job_id": "test-job-1",
+            "job_type": "compose",
+            "input_params": {"input_dir": "data/frames"},
+        },
+    )
     assert response.status_code == 400
