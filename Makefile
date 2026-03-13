@@ -1,8 +1,12 @@
 .PHONY: install lint check test test-unit test-int run run-cli data-clean
 
 data-clean:
-	rm -rf data/*/
-	rm -f data/*
+	@# Clean data/ except test directories
+	@for dir in data/*/; do \
+		case "$$dir" in data/test/) ;; *) rm -rf "$$dir" ;; esac; \
+	done
+	@for f in data/*; do [ -f "$$f" ] && rm -f "$$f" || true; done
+	rm -rf data/test/output/*
 
 install:
 	uv venv --clear

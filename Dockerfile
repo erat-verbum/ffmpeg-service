@@ -13,6 +13,9 @@ WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . /app
 
+# Copy test data
+COPY test/data/test_clip.mkv /app/data/test/input/test_clip.mkv
+
 # Set PYTHONPATH before installing/running
 ENV PYTHONPATH=/app
 

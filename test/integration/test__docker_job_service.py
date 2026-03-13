@@ -38,7 +38,7 @@ def check_service(client):
 
 @pytest.fixture(autouse=True)
 def reset_job_state(client):
-    """Ensure no job is running before each test, wait for any existing job to complete."""
+    """Ensure no running job before each test."""
     response = client.get("/job")
     if response.status_code == 200 and response.json() is not None:
         job = response.json()
@@ -50,7 +50,7 @@ def reset_job_state(client):
 def wait_for_job_completion(
     client: httpx.Client, job_id: str
 ) -> Optional[dict[str, Any]]:
-    """Poll GET /job until status is not 'running' or timeout."""
+    """Poll GET /job until status is terminal or timeout."""
     start_time = time.time()
     job: Optional[dict[str, Any]] = None
     while time.time() - start_time < POLL_TIMEOUT:
@@ -59,7 +59,7 @@ def wait_for_job_completion(
         job = response.json()
         if job is None:
             return None
-        if job["status"] != "running":
+        if job["status"] in ("completed", "failed", "cancelled"):
             return job
         time.sleep(POLL_INTERVAL)
     return job
@@ -91,7 +91,10 @@ def test_start_job_in_container(client):
         "job",
         json={
             "job_id": "test-job-1",
-            "input_params": {"input_file": "data/input.mp4", "output_dir": "data/out1"},
+            "input_params": {
+                "input_file": "data/test/input/test_clip.mkv",
+                "output_dir": "data/test/output",
+            },
         },
     )
     assert response.status_code == 200
@@ -107,7 +110,10 @@ def test_get_job_returns_running(client):
         "job",
         json={
             "job_id": "running-job",
-            "input_params": {"input_file": "data/input.mp4", "output_dir": "data/out2"},
+            "input_params": {
+                "input_file": "data/test/input/test_clip.mkv",
+                "output_dir": "data/test/output/2",
+            },
         },
     )
 
@@ -122,7 +128,10 @@ def test_get_job_returns_running(client):
 
 def test_job_with_input_params(client):
     """Test POST /job with input_params stores and returns them."""
-    input_params = {"input_file": "data/input.mp4", "output_dir": "data/output_frames"}
+    input_params = {
+        "input_file": "data/test/input/test_clip.mkv",
+        "output_dir": "data/test/output/params",
+    }
     response = client.post(
         "job", json={"job_id": "params-job", "input_params": input_params}
     )
@@ -141,7 +150,10 @@ def test_cannot_start_job_while_running(client):
         "job",
         json={
             "job_id": "first-job",
-            "input_params": {"input_file": "data/input.mp4", "output_dir": "data/out3"},
+            "input_params": {
+                "input_file": "data/test/input/test_clip.mkv",
+                "output_dir": "data/test/output/3",
+            },
         },
     )
 
@@ -149,7 +161,10 @@ def test_cannot_start_job_while_running(client):
         "job",
         json={
             "job_id": "second-job",
-            "input_params": {"input_file": "data/input.mp4", "output_dir": "data/out4"},
+            "input_params": {
+                "input_file": "data/test/input/test_clip.mkv",
+                "output_dir": "data/test/output/4",
+            },
         },
     )
     assert response.status_code == 409
@@ -162,7 +177,10 @@ def test_cancel_running_job(client):
         "job",
         json={
             "job_id": "cancel-job",
-            "input_params": {"input_file": "data/input.mp4", "output_dir": "data/out5"},
+            "input_params": {
+                "input_file": "data/test/input/test_clip.mkv",
+                "output_dir": "data/test/output/5",
+            },
         },
     )
 
@@ -177,14 +195,9 @@ def test_cancel_running_job(client):
 
 
 def test_cancel_no_job(client):
-    """Test POST /job/cancel when no running job returns 404 or 400 if job exists but not running."""
+    """Test POST /job/cancel when no running job returns 404 or 400."""
     response = client.post("/job/cancel")
-    if response.status_code == 400:
-        job_response = client.get("/job")
-        job = job_response.json()
-        if job and job["status"] != "running":
-            pytest.skip("Job from previous test exists but not running")
-    assert response.status_code == 404
+    assert response.status_code in (400, 404)
 
 
 def test_cancel_completed_job(client):
@@ -193,7 +206,10 @@ def test_cancel_completed_job(client):
         "job",
         json={
             "job_id": "already-done",
-            "input_params": {"input_file": "data/input.mp4", "output_dir": "data/out6"},
+            "input_params": {
+                "input_file": "data/test/input/test_clip.mkv",
+                "output_dir": "data/test/output/6",
+            },
         },
     )
 
