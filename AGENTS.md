@@ -6,7 +6,9 @@ FastAPI service for extracting and composing video frames using FFmpeg.
 
 ### Extract Job
 - Extracts frames from a video to PNG images
-- Saves metadata (resolution, frame rate, duration, etc.) for reconstitution
+- Saves metadata (resolution, display dimensions, frame rate, duration, etc.) for reconstitution
+  - Accounts for sample aspect ratio (SAR) and rotation when calculating display dimensions
+  - Stores output frames at display resolution with rotation baked in
 - Extracts all audio tracks to separate files
   - Preserves original format: aac, mp3, ac3, flac, opus, ogg, wav, m4a, etc.
 - Extracts all subtitle tracks to separate files
@@ -19,6 +21,8 @@ FastAPI service for extracting and composing video frames using FFmpeg.
 
 ### Compose Job
 - Creates a video from PNG frames using saved metadata
+  - Uses display dimensions from metadata (rotation is already baked into frames)
+  - No need to apply SAR or rotation when composing
 - Re-muxes all extracted audio tracks into the output video
   - Preserves original formats
 - Re-muxes all extracted subtitle tracks into the output video
