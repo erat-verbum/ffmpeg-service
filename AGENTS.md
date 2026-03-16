@@ -5,22 +5,22 @@ FastAPI service for extracting and composing video frames using FFmpeg.
 ## Features
 
 ### Extract Job
-- Extracts frames from a video to PNG images
+- Extracts frames from a video to `PNG` images
 - Saves metadata (resolution, display dimensions, frame rate, duration, etc.) for reconstitution
   - Accounts for sample aspect ratio (SAR) and rotation when calculating display dimensions
   - Stores output frames at display resolution with rotation baked in
 - Extracts all audio tracks to separate files
-  - Preserves original format: aac, mp3, ac3, flac, opus, ogg, wav, m4a, etc.
+  - Preserves original format: `aac`, `mp3`, `ac3`, `flac`, `opus`, `ogg`, `wav`, `m4a`, etc.
 - Extracts all subtitle tracks to separate files
-  - Preserves original format: srt, ass, vtt
+  - Preserves original format: `srt`, `ass`, `vtt`
 - Output:
-  - PNG frames
-  - metadata.json
-  - audio_*.{ext} files
-  - subtitle_*.{ext} files
+  - `PNG` frames
+  - `metadata.json`
+  - `audio_*.{ext}` files
+  - `subtitle_*.{ext}` files
 
 ### Compose Job
-- Creates a video from PNG frames using saved metadata
+- Creates a video from `PNG` frames using saved metadata
   - Uses display dimensions from metadata (rotation is already baked into frames)
   - No need to apply SAR or rotation when composing
 - Re-muxes all extracted audio tracks into the output video
@@ -85,7 +85,7 @@ service-name/
 
 - **models.py**: Pydantic models including `Job`, `JobStatus`, `JobType`, `StartJobRequest`, `VideoMetadata`, `AudioTrack`, `SubtitleTrack`
 
-- **job_runner.py**: FFmpeg job execution. Extracts frames from video to PNG files or composes video from frames. Saves metadata for reconstitution. Preserves all audio and subtitle tracks.
+- **job_runner.py**: FFmpeg job execution. Extracts frames from video to `PNG` files or composes video from frames. Saves metadata for reconstitution. Preserves all audio and subtitle tracks.
 
 - **cli.py**: Command-line interface for running frame extraction or composition without Docker. Use `-t` for job type, `-i` for input file, `-o` for output directory.
 
@@ -126,15 +126,15 @@ service-name/
 The job requires a `job_type` parameter to specify the operation:
 
 ### Extract Job
-Extracts frames from a video to PNG images and saves metadata for reconstitution. Also extracts all audio and subtitle tracks.
+Extracts frames from a video to `PNG` images and saves metadata for reconstitution. Also extracts all audio and subtitle tracks.
 - `job_type`: `"extract"` (required)
 - `input_file` (required): Path to input video file (e.g., `data/input.mp4`)
-- `output_dir` (required): Directory for output PNG frames (e.g., `data/output_frames`)
+- `output_dir` (required): Directory for output `PNG` frames (e.g., `data/output_frames`)
 
 ### Compose Job
-Creates a video from PNG frames using saved metadata. Preserves all extracted audio and subtitle tracks.
+Creates a video from `PNG` frames using saved metadata. Preserves all extracted audio and subtitle tracks.
 - `job_type`: `"compose"` (required)
-- `input_dir` (required): Directory containing PNG frames and metadata.json (e.g., `data/output_frames`)
+- `input_dir` (required): Directory containing `PNG` frames and `metadata.json` (e.g., `data/output_frames`)
 - `output_file` (required): Path to output video file (e.g., `data/composed.mp4`)
 
 All paths are relative to `/app/data/` in the container.
@@ -227,10 +227,10 @@ curl -X POST http://localhost:8001/job \
 # 3. Check status
 curl http://localhost:8001/job
 
-# 4. Frames will be at data/output_frames/frame_0001.png, etc.
-# 5. Audio tracks at data/output_frames/audio_0.aac, etc.
-# 6. Subtitle tracks at data/output_frames/subtitle_0.srt, etc.
-# 7. Metadata saved at data/output_frames/metadata.json
+# 4. Frames will be at `data/output_frames/frame_0001.png`, etc.
+# 5. Audio tracks at `data/output_frames/audio_0.aac`, etc.
+# 6. Subtitle tracks at `data/output_frames/subtitle_0.srt`, etc.
+# 7. Metadata saved at `data/output_frames/metadata.json`
 
 # Example: Compose a video from frames
 # 1. Start compose job:
