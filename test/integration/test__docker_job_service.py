@@ -1,15 +1,18 @@
 import os
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 import pytest
 
-
-BASE_URL = os.environ.get("INTEGRATION_TEST_URL", "http://localhost:8001")
+DATA_PATH = Path(__file__).parent.parent.parent / "data"
 POLL_INTERVAL = 0.5
 POLL_TIMEOUT = 5
+
+
+BASE_URL = os.environ.get("INTEGRATION_TEST_URL", "http://localhost:8001")
 
 
 def is_video_composer_job_service(client: httpx.Client) -> bool:
@@ -92,9 +95,10 @@ def test_start_job_in_container(client):
         "job",
         json={
             "job_id": "test-job-1",
+            "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
-                "output_dir": "data/test/output",
+                "input_file": "test/input/test_clip_1.mkv",
+                "output_dir": "test/output",
             },
         },
     )
@@ -111,9 +115,10 @@ def test_get_job_returns_running(client):
         "job",
         json={
             "job_id": "running-job",
+            "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
-                "output_dir": "data/test/output/2",
+                "input_file": "test/input/test_clip_1.mkv",
+                "output_dir": "test/output/2",
             },
         },
     )
@@ -130,19 +135,27 @@ def test_get_job_returns_running(client):
 def test_job_with_input_params(client):
     """Test POST /job with input_params stores and returns them."""
     input_params = {
-        "input_file": "data/test/input/test_clip_1.mkv",
-        "output_dir": "data/test/output/params",
+        "input_file": "test/input/test_clip_1.mkv",
+        "output_dir": "test/output/params",
     }
     response = client.post(
-        "job", json={"job_id": "params-job", "input_params": input_params}
+        "job",
+        json={
+            "job_id": "params-job",
+            "job_type": "extract",
+            "input_params": input_params,
+        },
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["input_params"] == input_params
+    assert data["input_params"]["input_file"] == input_params["input_file"]
+    assert data["input_params"]["output_dir"] == input_params["output_dir"]
 
     response = client.get("/job")
     assert response.status_code == 200
-    assert response.json()["input_params"] == input_params
+    stored_params = response.json()["input_params"]
+    assert stored_params["input_file"] == input_params["input_file"]
+    assert stored_params["output_dir"] == input_params["output_dir"]
 
 
 def test_cannot_start_job_while_running(client):
@@ -151,9 +164,10 @@ def test_cannot_start_job_while_running(client):
         "job",
         json={
             "job_id": "first-job",
+            "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
-                "output_dir": "data/test/output/3",
+                "input_file": "test/input/test_clip_1.mkv",
+                "output_dir": "test/output/3",
             },
         },
     )
@@ -162,9 +176,10 @@ def test_cannot_start_job_while_running(client):
         "job",
         json={
             "job_id": "second-job",
+            "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
-                "output_dir": "data/test/output/4",
+                "input_file": "test/input/test_clip_1.mkv",
+                "output_dir": "test/output/4",
             },
         },
     )
@@ -178,9 +193,10 @@ def test_cancel_running_job(client):
         "job",
         json={
             "job_id": "cancel-job",
+            "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
-                "output_dir": "data/test/output/5",
+                "input_file": "test/input/test_clip_1.mkv",
+                "output_dir": "test/output/5",
             },
         },
     )
@@ -207,9 +223,10 @@ def test_cancel_completed_job(client):
         "job",
         json={
             "job_id": "already-done",
+            "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
-                "output_dir": "data/test/output/6",
+                "input_file": "test/input/test_clip_1.mkv",
+                "output_dir": "test/output/6",
             },
         },
     )
@@ -250,9 +267,9 @@ def get_video_fps(video_path: str) -> float:
 
 def test_roundtrip_extract_and_compose(client):
     """Test extracting frames and composing them back preserves FPS."""
-    original_video = "/app/data/test/input/test_clip_1.mkv"
-    extract_dir = "data/test/output/roundtrip_frames"
-    composed_video = "data/test/output/roundtrip_composed.mp4"
+    original_video = "/home/nelson/Development/video-processing-job-service/data/test/input/test_clip_1.mkv"
+    extract_dir = "test/output/roundtrip_frames"
+    composed_video = "test/output/roundtrip_composed.mp4"
 
     original_fps = get_video_fps(original_video)
 
@@ -262,7 +279,7 @@ def test_roundtrip_extract_and_compose(client):
             "job_id": "roundtrip-extract",
             "job_type": "extract",
             "input_params": {
-                "input_file": "data/test/input/test_clip_1.mkv",
+                "input_file": "test/input/test_clip_1.mkv",
                 "output_dir": extract_dir,
             },
         },
@@ -291,7 +308,9 @@ def test_roundtrip_extract_and_compose(client):
     assert compose_job is not None
     assert compose_job["status"] == "completed"
 
-    composed_fps = get_video_fps("/app/data/" + composed_video)
+    composed_fps = get_video_fps(
+        "/home/nelson/Development/video-processing-job-service/data/" + composed_video
+    )
 
     assert composed_fps == original_fps, (
         f"FPS mismatch: original={original_fps}, composed={composed_fps}"
@@ -300,9 +319,9 @@ def test_roundtrip_extract_and_compose(client):
 
 def test_rotated_video_roundtrip(client):
     """Test extracting and composing a rotated video preserves correct dimensions."""
-    rotated_video = "data/test/input/test_clip_3.mkv"
-    extract_dir = "data/test/output/rotated_frames"
-    composed_video = "data/test/output/rotated_composed.mp4"
+    rotated_video = "test/input/test_clip_3.mkv"
+    extract_dir = "test/output/rotated_frames"
+    composed_video = "test/output/rotated_composed.mp4"
 
     result = subprocess.run(
         [
@@ -315,7 +334,8 @@ def test_rotated_video_roundtrip(client):
             "stream=width,height",
             "-of",
             "json",
-            "/app/data/" + rotated_video,
+            "/home/nelson/Development/video-processing-job-service/data/"
+            + rotated_video,
         ],
         capture_output=True,
         text=True,
@@ -350,14 +370,14 @@ def test_rotated_video_roundtrip(client):
     metadata_response = client.get("/job")
     assert metadata_response.status_code == 200
 
-    metadata_file = "/app/" + extract_dir + "/metadata.json"
+    metadata_file = str(DATA_PATH / extract_dir / "metadata.json")
     with open(metadata_file) as f:
         metadata = json.load(f)
 
     assert metadata["width"] == 576
     assert metadata["height"] == 720
-    assert metadata["display_width"] == 720
-    assert metadata["display_height"] == 576
+    assert metadata["display_width"] == 404
+    assert metadata["display_height"] == 720
 
     compose_response = client.post(
         "job",
@@ -387,7 +407,8 @@ def test_rotated_video_roundtrip(client):
             "stream=width,height",
             "-of",
             "json",
-            "/app/data/" + composed_video,
+            "/home/nelson/Development/video-processing-job-service/data/"
+            + composed_video,
         ],
         capture_output=True,
         text=True,
@@ -396,5 +417,160 @@ def test_rotated_video_roundtrip(client):
     composed_width = composed_info["streams"][0]["width"]
     composed_height = composed_info["streams"][0]["height"]
 
-    assert composed_width == 720, f"Expected width 720, got {composed_width}"
-    assert composed_height == 576, f"Expected height 576, got {composed_height}"
+    assert composed_width == 404, f"Expected width 404, got {composed_width}"
+    assert composed_height == 720, f"Expected height 720, got {composed_height}"
+
+
+def test_auto_crop_detects_and_applies_black_bar_crop(client):
+    """Test that auto-crop detects black bars and crops them from frames."""
+    video_with_black_bars = "test/input/test_clip_2.mkv"
+    extract_dir = "test/output/autocrop_frames"
+
+    extract_response = client.post(
+        "job",
+        json={
+            "job_id": "autocrop-test",
+            "job_type": "extract",
+            "input_params": {
+                "input_file": video_with_black_bars,
+                "output_dir": extract_dir,
+                "auto_crop": True,
+            },
+        },
+    )
+    assert extract_response.status_code == 200
+
+    extract_job = wait_for_job_completion(client, "autocrop-test")
+    assert extract_job is not None
+    assert extract_job["status"] == "completed"
+    assert extract_job["result"]["frame_count"] > 0
+
+    import json
+
+    metadata_file = str(DATA_PATH / extract_dir / "metadata.json")
+    with open(metadata_file) as f:
+        metadata = json.load(f)
+
+    assert metadata["crop_width"] is not None
+    assert metadata["crop_height"] is not None
+    assert metadata["crop_x"] is not None
+    assert metadata["crop_y"] is not None
+
+    assert metadata["crop_height"] < metadata["height"], (
+        f"Crop height ({metadata['crop_height']}) should be less than "
+        f"original height ({metadata['height']})"
+    )
+
+    assert metadata["display_height"] == metadata["crop_height"], (
+        f"Display height ({metadata['display_height']}) should equal crop height ({metadata['crop_height']})"
+    )
+
+    assert metadata["display_height"] < metadata["height"], (
+        f"Display height ({metadata['display_height']}) should be less than "
+        f"original height ({metadata['height']}) due to cropping"
+    )
+
+    assert metadata["display_width"] == 1024, (
+        f"Display width should always be 1024 for this SAR, got {metadata['display_width']}"
+    )
+
+    frame_files = sorted((DATA_PATH / extract_dir / "frame").glob("frame_*.png"))
+    assert len(frame_files) > 0, "No frames extracted"
+
+    frame_path = frame_files[0]
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            str(frame_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    frame_info = json.loads(result.stdout)
+    frame_width = frame_info["streams"][0]["width"]
+    frame_height = frame_info["streams"][0]["height"]
+
+    assert frame_width == metadata["display_width"], (
+        f"Frame width {frame_width} should match display_width {metadata['display_width']}"
+    )
+    assert frame_height == metadata["display_height"], (
+        f"Frame height {frame_height} should match display_height {metadata['display_height']}"
+    )
+
+
+def test_auto_crop_disabled_keeps_original_dimensions(client):
+    """Test that auto_crop=false does not crop black bars."""
+    video_with_black_bars = "test/input/test_clip_2.mkv"
+    extract_dir = "test/output/no_autocrop_frames"
+
+    extract_response = client.post(
+        "job",
+        json={
+            "job_id": "no-autocrop-test",
+            "job_type": "extract",
+            "input_params": {
+                "input_file": video_with_black_bars,
+                "output_dir": extract_dir,
+                "auto_crop": False,
+            },
+        },
+    )
+    assert extract_response.status_code == 200
+
+    extract_job = wait_for_job_completion(client, "no-autocrop-test")
+    assert extract_job is not None
+    assert extract_job["status"] == "completed"
+
+    import json
+
+    metadata_file = str(DATA_PATH / extract_dir / "metadata.json")
+    with open(metadata_file) as f:
+        metadata = json.load(f)
+
+    assert metadata.get("crop_width") is None
+    assert metadata.get("crop_height") is None
+    assert metadata.get("crop_x") is None
+    assert metadata.get("crop_y") is None
+
+    assert metadata["display_width"] == 1024, (
+        f"Display width should always be 1024 for this SAR, got {metadata['display_width']}"
+    )
+
+    frame_files = sorted((DATA_PATH / extract_dir / "frame").glob("frame_*.png"))
+    assert len(frame_files) > 0, "No frames extracted"
+
+    frame_path = frame_files[0]
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            str(frame_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    frame_info = json.loads(result.stdout)
+    frame_width = frame_info["streams"][0]["width"]
+    frame_height = frame_info["streams"][0]["height"]
+
+    assert frame_width == metadata["display_width"], (
+        f"Frame width {frame_width} should match display_width {metadata['display_width']}"
+    )
+    assert frame_height == metadata["display_height"], (
+        f"Frame height {frame_height} should match display_height {metadata['display_height']}"
+    )

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -51,7 +52,7 @@ class JobRunner:
         Extract all frames from a video file to PNG images.
 
         Args:
-            input_params: Dictionary with input_file and output_dir
+            input_params: Dictionary with input_file, output_dir, and optional auto_crop
 
         Returns:
             dict: Result containing extraction status and frame count
@@ -62,6 +63,7 @@ class JobRunner:
         """
         input_file = input_params.get("input_file")
         output_dir = input_params.get("output_dir")
+        auto_crop = input_params.get("auto_crop", True)
 
         if not input_file or not output_dir:
             raise ValueError("input_file and output_dir are required")
@@ -82,18 +84,51 @@ class JobRunner:
         subtitle_dir.mkdir(exist_ok=True)
 
         metadata = await self._extract_metadata(input_path)
+
+        crop_x = None
+        crop_y = None
+        crop_width = None
+        crop_height = None
+
+        if auto_crop and metadata.duration_seconds > 30:
+            crop_result = await self._detect_crop(input_path, metadata.duration_seconds)
+            if crop_result:
+                crop_width, crop_height, crop_x, crop_y = crop_result
+                metadata.crop_width = crop_width
+                metadata.crop_height = crop_height
+                metadata.crop_x = crop_x
+                metadata.crop_y = crop_y
+
+                rotation = metadata.rotation
+                sar = metadata.sample_aspect_ratio
+
+                if rotation in (90, -90, 270, -270):
+                    metadata.display_width = crop_height
+                    metadata.display_height = round(crop_width * sar)
+                else:
+                    metadata.display_width = round(crop_width * sar)
+                    metadata.display_height = crop_height
+
+                metadata.display_width = (metadata.display_width // 2) * 2
+                metadata.display_height = (metadata.display_height // 2) * 2
+
         self._save_metadata(output_path, metadata)
 
         output_pattern = str(frame_dir / "frame_%04d.png")
 
         ffmpeg_args = ["ffmpeg", "-i", str(input_path), "-y"]
 
+        if crop_width and crop_height:
+            video_filter = f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={metadata.display_width}:{metadata.display_height}"
+        else:
+            video_filter = f"scale={metadata.display_width}:{metadata.display_height}"
+
         ffmpeg_args.extend(
             [
                 "-map",
                 "0:v",
                 "-vf",
-                f"scale={metadata.display_width}:{metadata.display_height}",
+                video_filter,
                 output_pattern,
             ]
         )
@@ -110,7 +145,10 @@ class JobRunner:
                 ]
             )
 
+        supported_subtitle_codecs = {"subrip", "srt", "ass", "ssa", "webvtt", "vtt"}
         for track in metadata.subtitle_tracks:
+            if track.codec not in supported_subtitle_codecs:
+                continue
             ffmpeg_args.extend(
                 [
                     "-map",
@@ -363,6 +401,9 @@ class JobRunner:
         codec = stream.get("codec_name", "unknown")
         duration = float(stream.get("duration", 0.0))
 
+        if duration == 0.0:
+            duration = await self._get_format_duration(video_path)
+
         sar_str = stream.get("sample_aspect_ratio", "1:1")
         if ":" in sar_str:
             sar_num, sar_den = sar_str.split(":")
@@ -395,6 +436,8 @@ class JobRunner:
             duration_seconds=duration,
             audio_tracks=audio_tracks,
             subtitle_tracks=subtitle_tracks,
+            rotation=rotation,
+            sample_aspect_ratio=sar,
         )
 
     async def _extract_audio_streams(self, video_path: Path) -> list[AudioTrack]:
@@ -546,6 +589,106 @@ class JobRunner:
             )
 
         return subtitle_tracks
+
+    async def _get_format_duration(self, video_path: Path) -> float:
+        """
+        Get video duration from format-level metadata.
+
+        Args:
+            video_path: Path to the video file
+
+        Returns:
+            float: Duration in seconds, or 0.0 if not available
+        """
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(video_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            await process.wait()
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise
+
+        if process.returncode != 0:
+            return 0.0
+
+        if process.stdout is not None:
+            stdout = await process.stdout.read()
+            output = json.loads(stdout.decode())
+            format_info = output.get("format", {})
+            return float(format_info.get("duration", 0.0))
+
+        return 0.0
+
+    async def _detect_crop(
+        self, video_path: Path, duration: float
+    ) -> Optional[tuple[int, int, int, int]]:
+        """
+        Detect crop values for removing black bars from video.
+
+        Args:
+            video_path: Path to the video file
+            duration: Video duration in seconds
+
+        Returns:
+            Tuple of (crop_width, crop_height, crop_x, crop_y) or None if no crop detected
+        """
+        offset = min(60.0, duration * 0.1)
+
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-ss",
+            str(offset),
+            "-i",
+            str(video_path),
+            "-vframes",
+            "30",
+            "-vf",
+            "cropdetect=24:16:0",
+            "-f",
+            "null",
+            "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            await process.wait()
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise
+
+        if process.stderr is not None:
+            stderr = await process.stderr.read()
+            output = stderr.decode()
+        else:
+            return None
+
+        crop_pattern = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
+        matches = crop_pattern.findall(output)
+
+        if not matches:
+            return None
+
+        last_match = matches[-1]
+        crop_w, crop_h, crop_x, crop_y = map(int, last_match)
+
+        if crop_w == 0 or crop_h == 0:
+            return None
+
+        return (crop_w, crop_h, crop_x, crop_y)
 
     def _save_metadata(self, output_dir: Path, metadata: VideoMetadata) -> None:
         """Save metadata to a JSON file in the output directory."""

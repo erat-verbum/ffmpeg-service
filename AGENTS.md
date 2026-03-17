@@ -6,7 +6,10 @@ FastAPI service for extracting and composing video frames using FFmpeg.
 
 ### Extract Job
 - Extracts frames from a video to `PNG` images
-- Saves metadata (resolution, display dimensions, frame rate, duration, etc.) for reconstitution
+- Automatically detects and crops black bars from video (enabled by default)
+  - Uses FFmpeg's `cropdetect` filter to find black borders
+  - Recalculates display dimensions based on cropped internal resolution + SAR
+- Saves metadata (resolution, display dimensions, frame rate, duration, crop info, etc.) for reconstitution
   - Accounts for sample aspect ratio (SAR) and rotation when calculating display dimensions
   - Stores output frames at display resolution with rotation baked in
 - Extracts all audio tracks to separate files
@@ -130,6 +133,7 @@ Extracts frames from a video to `PNG` images and saves metadata for reconstituti
 - `job_type`: `"extract"` (required)
 - `input_file` (required): Path to input video file (e.g., `data/input.mp4`)
 - `output_dir` (required): Directory for output `PNG` frames (e.g., `data/output_frames`)
+- `auto_crop` (optional): Whether to automatically crop black bars from video (default: `true`)
 
 ### Compose Job
 Creates a video from `PNG` frames using saved metadata. Preserves all extracted audio and subtitle tracks.
@@ -165,7 +169,8 @@ All paths are relative to `/app/data/` in the container.
       "input_params": {
         // For extract:
         "input_file": "data/input.mp4",
-        "output_dir": "data/output_frames"
+        "output_dir": "data/output_frames",
+        "auto_crop": true
         // OR for compose:
         "input_dir": "data/output_frames",
         "output_file": "data/composed.mp4"
@@ -220,7 +225,8 @@ curl -X POST http://localhost:8001/job \
     "job_type": "extract",
     "input_params": {
       "input_file": "data/input.mp4",
-      "output_dir": "data/output_frames"
+      "output_dir": "data/output_frames",
+      "auto_crop": true
     }
   }'
 
@@ -230,7 +236,7 @@ curl http://localhost:8001/job
 # 4. Frames will be at `data/output_frames/frame/frame_0001.png`, etc.
 # 5. Audio tracks at `data/output_frames/audio/audio_0.aac`, etc.
 # 6. Subtitle tracks at `data/output_frames/subtitle/subtitle_0.srt`, etc.
-# 7. Metadata saved at `data/output_frames/metadata.json`
+# 7. Metadata saved at `data/output_frames/metadata.json` (includes crop info if auto_crop enabled)
 
 # Example: Compose a video from frames
 # 1. Start compose job:
@@ -256,6 +262,9 @@ make run-cli
 # Or directly:
 uv run python -m src.cli run -t extract -i video.mp4 -o output_frames
 
+# Extract without auto-crop:
+uv run python -m src.cli run -t extract -i video.mp4 -o output_frames --no-auto-crop
+
 # Compose a video from frames:
 uv run python -m src.cli run -t compose --input-dir output_frames -o composed.mp4
 ```
@@ -268,6 +277,7 @@ uv run python -m src.cli run -t compose --input-dir output_frames -o composed.mp
 - `--input-dir`: Input directory containing frames (for compose)
 - `--output-file`: Output video file path (for compose)
 - `-j, --job-id`: Job identifier (auto-generated if not provided)
+- `--auto-crop/--no-auto-crop`: Automatically crop black bars from video (default: enabled)
 
 ## Dockerfile Requirements
 

@@ -67,6 +67,12 @@ class VideoMetadata(BaseModel):
     duration_seconds: float
     audio_tracks: list[AudioTrack] = []
     subtitle_tracks: list[SubtitleTrack] = []
+    rotation: int = 0
+    sample_aspect_ratio: float = 1.0
+    crop_x: Optional[int] = None
+    crop_y: Optional[int] = None
+    crop_width: Optional[int] = None
+    crop_height: Optional[int] = None
 
 
 class Job(BaseModel):
@@ -97,6 +103,7 @@ class ExtractFramesRequest(BaseModel):
 
     input_file: str
     output_dir: str
+    auto_crop: bool = True
 
 
 class ComposeFramesRequest(BaseModel):

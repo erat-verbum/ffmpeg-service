@@ -46,6 +46,7 @@ class CliJobRunner(JobRunner):
         """Run the frame extraction job with progress output."""
         input_file = input_params.get("input_file")
         output_dir = input_params.get("output_dir")
+        auto_crop = input_params.get("auto_crop", True)
 
         if not input_file or not output_dir:
             raise ValueError("input_file and output_dir are required")
@@ -62,6 +63,36 @@ class CliJobRunner(JobRunner):
 
         runner = JobRunner(None, lambda: "running")
         metadata = await runner._extract_metadata(input_path)
+
+        crop_x = None
+        crop_y = None
+        crop_width = None
+        crop_height = None
+
+        if auto_crop and metadata.duration_seconds > 30:
+            crop_result = await runner._detect_crop(
+                input_path, metadata.duration_seconds
+            )
+            if crop_result:
+                crop_width, crop_height, crop_x, crop_y = crop_result
+                metadata.crop_width = crop_width
+                metadata.crop_height = crop_height
+                metadata.crop_x = crop_x
+                metadata.crop_y = crop_y
+
+                rotation = metadata.rotation
+                sar = metadata.sample_aspect_ratio
+
+                if rotation in (90, -90, 270, -270):
+                    metadata.display_width = crop_height
+                    metadata.display_height = round(crop_width * sar)
+                else:
+                    metadata.display_width = round(crop_width * sar)
+                    metadata.display_height = crop_height
+
+                metadata.display_width = (metadata.display_width // 2) * 2
+                metadata.display_height = (metadata.display_height // 2) * 2
+
         runner._save_metadata(output_path, metadata)
 
         frame_dir = output_path / "frame"
@@ -75,6 +106,11 @@ class CliJobRunner(JobRunner):
 
         console.print(f"[cyan]Starting extraction:[/cyan] {input_file} -> {output_dir}")
 
+        if crop_width and crop_height:
+            video_filter = f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={metadata.display_width}:{metadata.display_height}"
+        else:
+            video_filter = f"scale={metadata.display_width}:{metadata.display_height}"
+
         ffmpeg_args = [
             "ffmpeg",
             "-i",
@@ -83,7 +119,7 @@ class CliJobRunner(JobRunner):
             "-map",
             "0:v",
             "-vf",
-            f"scale={metadata.display_width}:{metadata.display_height}",
+            video_filter,
             output_pattern,
         ]
 
@@ -374,6 +410,11 @@ def run(
         "--output-file",
         help="Output video file path (for compose)",
     ),
+    auto_crop: bool = typer.Option(
+        True,
+        "--auto-crop/--no-auto-crop",
+        help="Automatically crop black bars from video (default: enabled)",
+    ),
 ) -> None:
     """
     Run a video processing job (extract or compose).
@@ -397,6 +438,7 @@ def run(
             "job_type": job_type.value,
             "input_file": input_file,
             "output_dir": output_dir,
+            "auto_crop": auto_crop,
         }
         console.print(f"[bold]Starting extract job:[/bold] {job_id}")
     elif job_type == JobType.COMPOSE:
