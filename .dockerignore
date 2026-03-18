@@ -1,0 +1,10 @@
+data
+.venv
+.gitignore
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+*.pyc
+__pycache__
+.DS_Store

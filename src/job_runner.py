@@ -1,11 +1,15 @@
 import asyncio
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .models import AudioTrack, JobType, SubtitleTrack, VideoMetadata
+from .ocr import convert_bitmap_subtitle_to_srt, get_tesseract_language
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = "/app/data"
 
@@ -65,6 +69,7 @@ class JobRunner:
         input_file = input_params.get("input_file")
         output_dir = input_params.get("output_dir")
         auto_crop = input_params.get("auto_crop", True)
+        ocr_enabled = input_params.get("ocr_enabled", True)
 
         if not input_file or not output_dir:
             raise ValueError("input_file and output_dir are required")
@@ -209,7 +214,12 @@ class JobRunner:
         )
         frame_count = len(frame_files)
 
-        self._extract_bitmap_subtitles(input_path, output_path, metadata)
+        self._update_progress(40)
+        await self._extract_bitmap_subtitles(
+            input_path, output_path, metadata, ocr_enabled
+        )
+        self._update_progress(60)
+        self._save_metadata(output_path, metadata)
 
         return {
             "completed": True,
@@ -222,13 +232,14 @@ class JobRunner:
             "subtitle_track_count": len(metadata.subtitle_tracks),
         }
 
-    def _extract_bitmap_subtitles(
+    async def _extract_bitmap_subtitles(
         self,
         input_path: Path,
         output_path: Path,
         metadata: VideoMetadata,
+        ocr_enabled: bool = True,
     ) -> None:
-        """Extract bitmap-based subtitles using mkvextract."""
+        """Extract bitmap-based subtitles using mkvextract and optionally convert to SRT."""
         bitmap_subtitle_codecs = {
             "dvbsub",
             "dvd_subtitle",
@@ -248,19 +259,41 @@ class JobRunner:
                 continue
             try:
                 ext = bitmap_codec_to_ext.get(track.codec, "sub")
-                output_file = subtitle_dir / f"subtitle_{track.stream_index}.{ext}"
+                bitmap_path = subtitle_dir / f"subtitle_{track.stream_index}.{ext}"
                 result = subprocess.run(
                     [
                         "mkvextract",
                         "tracks",
                         str(input_path),
-                        f"{track.stream_index}:{output_file}",
+                        f"{track.stream_index}:{bitmap_path}",
                     ],
                     capture_output=True,
                     text=True,
                 )
                 if result.returncode != 0:
-                    pass
+                    logger.warning(
+                        f"Failed to extract bitmap subtitle track {track.stream_index}: "
+                        f"{result.stderr}"
+                    )
+                    continue
+                if ocr_enabled:
+                    tesseract_lang = get_tesseract_language(track.language)
+                    if tesseract_lang is None:
+                        logger.info(
+                            f"Skipping OCR for track {track.stream_index}: "
+                            f"unsupported language '{track.language}'"
+                        )
+                        continue
+                    srt_path = subtitle_dir / f"subtitle_{track.stream_index}.srt"
+                    success = await convert_bitmap_subtitle_to_srt(
+                        bitmap_path, srt_path, tesseract_lang
+                    )
+                    if success:
+                        track.filename = f"subtitle/subtitle_{track.stream_index}.srt"
+                        track.ocr_converted = True
+                        logger.info(
+                            f"Successfully converted track {track.stream_index} to SRT"
+                        )
             except FileNotFoundError:
                 break
 
@@ -338,6 +371,22 @@ class JobRunner:
             subtitle_files.extend(sorted(input_path.glob(f"subtitle/subtitle_*.{ext}")))
         subtitle_files.sort()
 
+        subtitle_by_track: dict[int, Path] = {}
+        text_extensions = {"srt", "ass", "vtt"}
+        for sub_file in subtitle_files:
+            track_num = int(sub_file.stem.split("_")[1])
+            ext = sub_file.suffix.lstrip(".")
+            if track_num not in subtitle_by_track:
+                subtitle_by_track[track_num] = sub_file
+            elif (
+                ext in text_extensions
+                and sub_file.suffix.lstrip(".") in text_extensions
+            ):
+                subtitle_by_track[track_num] = sub_file
+        subtitle_files = sorted(
+            subtitle_by_track.values(), key=lambda p: int(p.stem.split("_")[1])
+        )
+
         audio_index = 0
         for audio_file in audio_files:
             ffmpeg_args.extend(["-i", str(audio_file)])
@@ -356,15 +405,40 @@ class JobRunner:
             ]
         )
 
-        for _ in audio_files:
+        audio_language_map: dict[int, Optional[str]] = {}
+        audio_title_map: dict[int, Optional[str]] = {}
+        for track in metadata.audio_tracks:
+            audio_language_map[track.stream_index] = track.language
+            audio_title_map[track.stream_index] = track.title
+        audio_input_index = 0
+        for i, _ in enumerate(audio_files):
             ffmpeg_args.extend(["-map", f"{audio_index + 1}:a", "-c:a", "copy"])
+            track_num = int(audio_files[i].stem.split("_")[1])
+            language = audio_language_map.get(track_num)
+            if language:
+                ffmpeg_args.extend(
+                    [f"-metadata:s:a:{audio_input_index}", f"language={language}"]
+                )
+            title = audio_title_map.get(track_num)
+            if title:
+                ffmpeg_args.extend(
+                    [f"-metadata:s:a:{audio_input_index}", f"title={title}"]
+                )
             audio_index += 1
+            audio_input_index += 1
 
         subtitle_input_offset = 1 + len(audio_files)
-        for i in range(len(subtitle_files)):
+        subtitle_language_map: dict[int, Optional[str]] = {}
+        for track in metadata.subtitle_tracks:
+            subtitle_language_map[track.stream_index] = track.language
+        for i, subtitle_file in enumerate(subtitle_files):
             ffmpeg_args.extend(
                 ["-map", f"{subtitle_input_offset + i}:s", "-c:s", "copy"]
             )
+            track_num = int(subtitle_file.stem.split("_")[1])
+            language = subtitle_language_map.get(track_num)
+            if language:
+                ffmpeg_args.extend([f"-metadata:s:s:{i}", f"language={language}"])
 
         ffmpeg_args.append(str(output_path))
 
@@ -521,7 +595,9 @@ class JobRunner:
             "-select_streams",
             "a",
             "-show_entries",
-            "stream=index,codec_name,tags",
+            "stream=index,codec_name",
+            "-show_entries",
+            "stream_tags=language,title",
             "-of",
             "json",
             str(video_path),
@@ -566,6 +642,7 @@ class JobRunner:
             codec = stream.get("codec_name", "unknown")
             tags = stream.get("tags", {})
             language = tags.get("language")
+            title = tags.get("title")
 
             ext = codec_to_ext.get(codec, "m4a")
             filename = f"audio/audio_{stream_index}.{ext}"
@@ -575,6 +652,7 @@ class JobRunner:
                     stream_index=stream_index,
                     codec=codec,
                     language=language,
+                    title=title,
                     filename=filename,
                 )
             )
@@ -598,7 +676,9 @@ class JobRunner:
             "-select_streams",
             "s",
             "-show_entries",
-            "stream=index,codec_name,tags",
+            "stream=index,codec_name",
+            "-show_entries",
+            "stream_tags=language",
             "-of",
             "json",
             str(video_path),

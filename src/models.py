@@ -43,6 +43,7 @@ class AudioTrack(BaseModel):
     stream_index: int
     codec: str
     language: Optional[str] = None
+    title: Optional[str] = None
     filename: str
 
 
@@ -53,6 +54,7 @@ class SubtitleTrack(BaseModel):
     codec: str
     language: Optional[str] = None
     filename: str
+    ocr_converted: bool = False
 
 
 class VideoMetadata(BaseModel):
@@ -104,6 +106,7 @@ class ExtractFramesRequest(BaseModel):
     input_file: str
     output_dir: str
     auto_crop: bool = True
+    ocr_enabled: bool = True
 
 
 class ComposeFramesRequest(BaseModel):

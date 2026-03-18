@@ -48,6 +48,7 @@ class CliJobRunner(JobRunner):
         input_file = input_params.get("input_file")
         output_dir = input_params.get("output_dir")
         auto_crop = input_params.get("auto_crop", True)
+        ocr_enabled = input_params.get("ocr_enabled", True)
 
         if not input_file or not output_dir:
             raise ValueError("input_file and output_dir are required")
@@ -93,8 +94,6 @@ class CliJobRunner(JobRunner):
 
                 metadata.display_width = (metadata.display_width // 2) * 2
                 metadata.display_height = (metadata.display_height // 2) * 2
-
-        runner._save_metadata(output_path, metadata)
 
         frame_dir = output_path / "frame"
         audio_dir = output_path / "audio"
@@ -201,9 +200,11 @@ class CliJobRunner(JobRunner):
         )
         frame_count = len(frame_files)
 
-        self._extract_bitmap_subtitles(
-            input_path, output_path, metadata.subtitle_tracks
+        await self._extract_bitmap_subtitles(
+            input_path, output_path, metadata.subtitle_tracks, ocr_enabled
         )
+
+        runner._save_metadata(output_path, metadata)
 
         self._update_progress(100)
         console.print("[cyan]Progress:[/cyan] 100% - Complete!")
@@ -219,18 +220,27 @@ class CliJobRunner(JobRunner):
             "subtitle_track_count": len(metadata.subtitle_tracks),
         }
 
-    def _extract_bitmap_subtitles(
+    async def _extract_bitmap_subtitles(
         self,
         input_path: Path,
         output_path: Path,
         metadata: Any,
+        ocr_enabled: bool = True,
     ) -> None:
-        """Extract bitmap-based subtitles using mkvextract."""
+        """Extract bitmap-based subtitles using mkvextract and optionally convert to SRT."""
+        from .ocr import convert_bitmap_subtitle_to_srt, get_tesseract_language
+
         bitmap_subtitle_codecs = {
             "dvbsub",
             "dvd_subtitle",
             "hdmv_pgs_subtitle",
             "vobsub",
+        }
+        bitmap_codec_to_ext = {
+            "dvbsub": "sup",
+            "dvd_subtitle": "sub",
+            "hdmv_pgs_subtitle": "sup",
+            "vobsub": "sub",
         }
         subtitle_dir = output_path / "subtitle"
         subtitle_dir.mkdir(exist_ok=True)
@@ -243,13 +253,14 @@ class CliJobRunner(JobRunner):
             if track.codec not in bitmap_subtitle_codecs:
                 continue
             try:
-                output_file = subtitle_dir / f"subtitle_{track.stream_index}.sub"
+                ext = bitmap_codec_to_ext.get(track.codec, "sub")
+                bitmap_path = subtitle_dir / f"subtitle_{track.stream_index}.{ext}"
                 result = subprocess.run(
                     [
                         "mkvextract",
                         "tracks",
                         str(input_path),
-                        f"{track.stream_index}:{output_file}",
+                        f"{track.stream_index}:{bitmap_path}",
                     ],
                     capture_output=True,
                     text=True,
@@ -259,6 +270,33 @@ class CliJobRunner(JobRunner):
                         f"[yellow]Warning:[/yellow] Failed to extract subtitle "
                         f"track {track.stream_index}: {result.stderr}"
                     )
+                    continue
+                if ocr_enabled:
+                    tesseract_lang = get_tesseract_language(track.language)
+                    if tesseract_lang is None:
+                        console.print(
+                            f"[yellow]Warning:[/yellow] Skipping OCR for track "
+                            f"{track.stream_index}: unsupported language '{track.language}'"
+                        )
+                        continue
+                    srt_path = subtitle_dir / f"subtitle_{track.stream_index}.srt"
+                    console.print(
+                        f"[cyan]Converting[/cyan] subtitle track {track.stream_index} "
+                        f"to SRT (language: {tesseract_lang})..."
+                    )
+                    success = await convert_bitmap_subtitle_to_srt(
+                        bitmap_path, srt_path, tesseract_lang
+                    )
+                    if success:
+                        track.ocr_converted = True
+                        console.print(
+                            f"[green]Success[/green] converted track {track.stream_index}"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]Warning:[/yellow] OCR failed for track "
+                            f"{track.stream_index}, keeping bitmap file"
+                        )
             except FileNotFoundError:
                 console.print(
                     "[yellow]Warning:[/yellow] mkvextract not found, "
@@ -329,11 +367,27 @@ class CliJobRunner(JobRunner):
             audio_files.extend(sorted(input_path.glob(f"audio/audio_*.{ext}")))
         audio_files.sort()
 
-        subtitle_extensions = ["srt", "ass", "vtt"]
+        subtitle_extensions = ["srt", "ass", "vtt", "sub", "sup"]
         subtitle_files = []
         for ext in subtitle_extensions:
             subtitle_files.extend(sorted(input_path.glob(f"subtitle/subtitle_*.{ext}")))
         subtitle_files.sort()
+
+        subtitle_by_track: dict[int, Path] = {}
+        text_extensions = {"srt", "ass", "vtt"}
+        for sub_file in subtitle_files:
+            track_num = int(sub_file.stem.split("_")[1])
+            ext = sub_file.suffix.lstrip(".")
+            if track_num not in subtitle_by_track:
+                subtitle_by_track[track_num] = sub_file
+            elif (
+                ext in text_extensions
+                and sub_file.suffix.lstrip(".") in text_extensions
+            ):
+                subtitle_by_track[track_num] = sub_file
+        subtitle_files = sorted(
+            subtitle_by_track.values(), key=lambda p: int(p.stem.split("_")[1])
+        )
 
         audio_index = 0
         for audio_file in audio_files:
@@ -353,15 +407,40 @@ class CliJobRunner(JobRunner):
             ]
         )
 
-        for _ in audio_files:
+        audio_language_map: dict[int, Optional[str]] = {}
+        audio_title_map: dict[int, Optional[str]] = {}
+        for track in metadata.audio_tracks:
+            audio_language_map[track.stream_index] = track.language
+            audio_title_map[track.stream_index] = track.title
+        audio_input_index = 0
+        for i in range(len(audio_files)):
             ffmpeg_args.extend(["-map", f"{audio_index + 1}:a", "-c:a", "copy"])
+            track_num = int(audio_files[i].stem.split("_")[1])
+            language = audio_language_map.get(track_num)
+            if language:
+                ffmpeg_args.extend(
+                    [f"-metadata:s:a:{audio_input_index}", f"language={language}"]
+                )
+            title = audio_title_map.get(track_num)
+            if title:
+                ffmpeg_args.extend(
+                    [f"-metadata:s:a:{audio_input_index}", f"title={title}"]
+                )
             audio_index += 1
+            audio_input_index += 1
 
         subtitle_input_offset = 1 + len(audio_files)
+        subtitle_language_map: dict[int, Optional[str]] = {}
+        for track in metadata.subtitle_tracks:
+            subtitle_language_map[track.stream_index] = track.language
         for i in range(len(subtitle_files)):
             ffmpeg_args.extend(
                 ["-map", f"{subtitle_input_offset + i}:s", "-c:s", "copy"]
             )
+            track_num = int(subtitle_files[i].stem.split("_")[1])
+            language = subtitle_language_map.get(track_num)
+            if language:
+                ffmpeg_args.extend([f"-metadata:s:s:{i}", f"language={language}"])
 
         ffmpeg_args.append(str(output_path))
 
@@ -489,6 +568,11 @@ def run(
         "--auto-crop/--no-auto-crop",
         help="Automatically crop black bars from video (default: enabled)",
     ),
+    ocr_enabled: bool = typer.Option(
+        True,
+        "--ocr/--no-ocr",
+        help="Convert bitmap subtitles to SRT using OCR (default: enabled)",
+    ),
 ) -> None:
     """
     Run a video processing job (extract or compose).
@@ -513,6 +597,7 @@ def run(
             "input_file": input_file,
             "output_dir": output_dir,
             "auto_crop": auto_crop,
+            "ocr_enabled": ocr_enabled,
         }
         console.print(f"[bold]Starting extract job:[/bold] {job_id}")
     elif job_type == JobType.COMPOSE:

@@ -14,14 +14,21 @@ FastAPI service for extracting and composing video frames using FFmpeg.
   - Stores output frames at display resolution with rotation baked in
 - Extracts all audio tracks to separate files
   - Preserves original format: `aac`, `mp3`, `ac3`, `flac`, `opus`, `ogg`, `wav`, `m4a`, etc.
+  - Preserves language and title metadata in metadata.json
 - Extracts all subtitle tracks to separate files
   - Text formats: `srt`, `ass`, `ssa`, `vtt`, `webvtt`, etc. (preserved as-is)
   - Bitmap formats: `dvd_subtitle`, `vobsub` (extracted to `.sub` + `.idx` files), `dvbsub`, `hdmv_pgs_subtitle` (extracted to `.sup` files)
   - Other text formats (jacosub, microdvd, mpl2, etc.) converted to `srt`
+- OCR conversion of bitmap subtitles to SRT (enabled by default)
+  - Uses `subtile-ocr` with Tesseract OCR engine
+  - Supported languages: English, French, German, Italian, Spanish
+  - Automatically detects language from subtitle track metadata
+  - Skips OCR for unsupported languages, keeping bitmap format
+  - Keeps both bitmap and SRT files after conversion
 - Output:
   - `frame/` directory with `PNG` frames
   - `audio/` directory with audio tracks
-  - `subtitle/` directory with subtitle tracks
+  - `subtitle/` directory with subtitle tracks (bitmap + OCR'd SRT if applicable)
   - `metadata.json` at root
 
 ### Compose Job
@@ -30,10 +37,13 @@ FastAPI service for extracting and composing video frames using FFmpeg.
   - No need to apply SAR or rotation when composing
 - Re-muxes all extracted audio tracks into the output video
   - Preserves original formats
+  - Preserves language and title metadata
 - Re-muxes all extracted subtitle tracks into the output video
   - Preserves original formats
+  - Preserves language metadata
+  - Prefers SRT over bitmap subtitles for the same track
 - Output:
-  - Reconstructed video file with all original audio/subtitle tracks
+  - Reconstructed video file with all original audio/subtitle tracks and metadata
 
 ## Quick Start
 
@@ -72,7 +82,8 @@ service-name/
 │   ├── main.py     # FastAPI application
 │   ├── models.py   # Pydantic models and data structures
 │   ├── job_runner.py  # Job execution logic
-│   └── cli.py      # CLI for running without Docker
+│   ├── cli.py      # CLI for running without Docker
+│   └── ocr.py      # OCR conversion module for bitmap subtitles
 └── test/
     ├── unit/       # Unit tests
     │   └── test__<name_of_file_being_tested>__<name_of_feature_being_tested>.py
@@ -90,13 +101,15 @@ service-name/
 
 - **models.py**: Pydantic models including `Job`, `JobStatus`, `JobType`, `StartJobRequest`, `VideoMetadata`, `AudioTrack`, `SubtitleTrack`
 
-- **job_runner.py**: FFmpeg job execution. Extracts frames from video to `PNG` files or composes video from frames. Saves metadata for reconstitution. Preserves all audio and subtitle tracks.
+- **job_runner.py**: FFmpeg job execution. Extracts frames from video to `PNG` files or composes video from frames. Saves metadata for reconstitution. Preserves all audio and subtitle tracks. Handles OCR conversion of bitmap subtitles.
 
 - **cli.py**: Command-line interface for running frame extraction or composition without Docker. Use `-t` for job type, `-i` for input file, `-o` for output directory.
 
+- **ocr.py**: OCR module for converting bitmap subtitles (VobSub, PGS) to SRT format using subtile-ocr with Tesseract.
+
 ## Service Components
 
-- **Dockerfile**: Container configuration for the service
+- **Dockerfile**: Container configuration for the service (includes Tesseract OCR and subtile-ocr)
 - **uv**: Package manager (installed in local `.venv`)
 - **pre-commit**: Git hook framework (runs lint, type check, and unit tests on commit)
 - **ruff**: Linting and formatting
@@ -136,6 +149,7 @@ Extracts frames from a video to `PNG` images and saves metadata for reconstituti
 - `input_file` (required): Path to input video file (e.g., `data/input.mp4`)
 - `output_dir` (required): Directory for output `PNG` frames (e.g., `data/output_frames`)
 - `auto_crop` (optional): Whether to automatically crop black bars from video (default: `true`)
+- `ocr_enabled` (optional): Whether to convert bitmap subtitles to SRT using OCR (default: `true`)
 
 ### Compose Job
 Creates a video from `PNG` frames using saved metadata. Preserves all extracted audio and subtitle tracks.
@@ -172,7 +186,8 @@ All paths are relative to `/app/data/` in the container.
         // For extract:
         "input_file": "data/input.mp4",
         "output_dir": "data/output_frames",
-        "auto_crop": true
+        "auto_crop": true,
+        "ocr_enabled": true
         // OR for compose:
         "input_dir": "data/output_frames",
         "output_file": "data/composed.mp4"
@@ -217,7 +232,7 @@ make up-build
 
 # The service will be available at http://localhost:8001
 
-# Example: Extract frames from a video
+# Example: Extract frames from a video with OCR
 # 1. Put video at data/input.mp4
 # 2. Start job:
 curl -X POST http://localhost:8001/job \
@@ -228,7 +243,8 @@ curl -X POST http://localhost:8001/job \
     "input_params": {
       "input_file": "data/input.mp4",
       "output_dir": "data/output_frames",
-      "auto_crop": true
+      "auto_crop": true,
+      "ocr_enabled": true
     }
   }'
 
@@ -238,8 +254,8 @@ curl http://localhost:8001/job
 # 4. Frames will be at `data/output_frames/frame/frame_0001.png`, etc.
 # 5. Audio tracks at `data/output_frames/audio/audio_0.aac`, etc.
 # 6. Subtitle tracks at `data/output_frames/subtitle/subtitle_0.srt`, etc.
-#    (bitmap subtitles: `.sub` + `.idx` files)
-# 7. Metadata saved at `data/output_frames/metadata.json` (includes crop info if auto_crop enabled)
+#    (bitmap subtitles: `.sub` + `.idx` files, plus OCR'd `.srt` if applicable)
+# 7. Metadata saved at `data/output_frames/metadata.json` (includes crop info and ocr_converted flags)
 
 # Example: Compose a video from frames
 # 1. Start compose job:
@@ -268,6 +284,9 @@ uv run python -m src.cli run -t extract -i video.mp4 -o output_frames
 # Extract without auto-crop:
 uv run python -m src.cli run -t extract -i video.mp4 -o output_frames --no-auto-crop
 
+# Extract without OCR:
+uv run python -m src.cli run -t extract -i video.mp4 -o output_frames --no-ocr
+
 # Compose a video from frames:
 uv run python -m src.cli run -t compose --input-dir output_frames -o composed.mp4
 ```
@@ -281,6 +300,7 @@ uv run python -m src.cli run -t compose --input-dir output_frames -o composed.mp
 - `--output-file`: Output video file path (for compose)
 - `-j, --job-id`: Job identifier (auto-generated if not provided)
 - `--auto-crop/--no-auto-crop`: Automatically crop black bars from video (default: enabled)
+- `--ocr/--no-ocr`: Convert bitmap subtitles to SRT using OCR (default: enabled)
 
 ## Dockerfile Requirements
 
@@ -291,3 +311,25 @@ RUN make install && \
     make check && \
     make test-unit
 ```
+
+## OCR Support
+
+The service supports automatic OCR conversion of bitmap subtitles (VobSub, PGS) to SRT format:
+
+### Supported Languages
+- English (eng)
+- French (fra)
+- German (deu)
+- Italian (ita)
+- Spanish (spa)
+
+### How It Works
+1. During extraction, bitmap subtitle tracks are extracted using mkvextract
+2. If `ocr_enabled` is true and the track has a supported language tag, subtile-ocr converts it to SRT
+3. Both the original bitmap file and the OCR'd SRT are kept
+4. During compose, SRT files are preferred over bitmap files for the same track
+5. The `ocr_converted` field in metadata.json indicates which tracks were OCR'd
+
+### Metadata Fields
+- `AudioTrack`: `stream_index`, `codec`, `language`, `title`, `filename`
+- `SubtitleTrack`: `stream_index`, `codec`, `language`, `filename`, `ocr_converted`
